@@ -8,10 +8,12 @@ import os, sys, time, subprocess, urllib.request, urllib.error, zipfile, shutil,
 import winreg
 import http.cookiejar
 from urllib.parse import urlencode
+import argparse
 
 # ---- USER CONFIG ----
 PACKAGES = [
     "com.google.android.googlequicksearchbox",
+    "com.google.android.projection.gearhead",
 ]
 
 CHECK_INTERVAL = 30  # seconds between full loops
@@ -21,6 +23,10 @@ PAGE_LOAD_TIMEOUT = 40
 
 # If you want to force a particular browser, set to "edge" / "chrome" / "firefox"
 FORCE_BROWSER = None
+
+# Behaviour flags (defaults) - can be changed via CLI args
+EXIT_ON_JOIN = False        # if True, exit immediately when a join action happens
+EXIT_ON_ALREADY = False     # if True, exit immediately when an already-enrolled package is detected
 
 # Where drivers will be downloaded & extracted
 DRIVER_BASE_DIR = os.path.join(os.path.expanduser("~"), ".selenium_drivers")
@@ -244,8 +250,8 @@ def ensure_edge_driver(browser_exe, browser_version):
                 latest_ver = r.read().decode().strip()
             
             zip_url = f"https://msedgedriver.azureedge.net/{latest_ver}/edgedriver_win64.zip"
-            dest_zip = os.path.join(DRIVER_BASE_DIR, f"msedgeddriver_{latest_ver}.zip")
-            out_dir = os.path.join(DRIVER_BASE_DIR, f"msedgeddriver_{latest_ver}")
+            dest_zip = os.path.join(DRIVER_BASE_DIR, f"msedgedriver_{latest_ver}.zip")
+            out_dir = os.path.join(DRIVER_BASE_DIR, f"msedgedriver_{latest_ver}")
             
             if os.path.exists(out_dir):
                 candidate = os.path.join(out_dir, "msedgedriver.exe")
@@ -569,8 +575,9 @@ def selenium_check_and_click(driver, pkg):
     
     for pattern in already_tester_patterns:
         if pattern in body_text:
-            log(f"{pkg}: Already a tester (selenium). Skipping.")
-            return False
+            log(f"{pkg}: Already a tester (selenium).")
+            # do not quit driver here; let main decide to close or reuse
+            return "ALREADY_TESTER"
 
     # Check for full messages
     full_patterns = [
@@ -673,7 +680,7 @@ def selenium_check_and_click(driver, pkg):
                         log("Clicked but success not confirmed. Opening browser for manual verification.")
                         webbrowser.open(url)
                         return True
-                except Exception as e:
+                except Exception:
                     continue
         except Exception:
             continue
@@ -727,8 +734,8 @@ def http_check(pkg):
     
     for pattern in already_tester_patterns:
         if pattern in text:
-            log(f"{pkg}: Already a tester (http). Skipping.")
-            return False
+            log(f"{pkg}: Already a tester (http).")
+            return "ALREADY_TESTER"
     
     # More comprehensive check for "full" messages
     full_patterns = [
@@ -843,37 +850,73 @@ def main():
     else:
         log("Unsupported or undetected default browser. Using HTTP polling fallback.")
 
+    # Use a set of remaining packages so we can skip ones already done
+    remaining = set(PACKAGES)
+
     try:
-        while True:
-            for pkg in PACKAGES:
+        while remaining:
+            for pkg in list(remaining):
                 try:
                     if selenium_driver:
-                        # Check if driver is still responsive
                         try:
-                            selenium_driver.current_url  # Simple check to see if driver is alive
+                            selenium_driver.current_url
                         except Exception:
                             log("Selenium driver crashed. Recreating...")
-                            selenium_driver.quit()
+                            try:
+                                selenium_driver.quit()
+                            except Exception:
+                                pass
                             kill_browser_processes(browser)
                             selenium_driver = create_selenium_driver(browser, prepared)
                             if not selenium_driver:
                                 log("Failed to recreate Selenium driver - switching to HTTP polling.")
-                        
+
                         if selenium_driver:
                             ok = selenium_check_and_click(selenium_driver, pkg)
                         else:
                             ok = http_check(pkg)
                     else:
                         ok = http_check(pkg)
-                    
+
+                    # If the checker signals you're already a tester
+                    if ok == "ALREADY_TESTER":
+                        if EXIT_ON_ALREADY:
+                            log("Already a tester for", pkg, "- exiting as requested.")
+                            # attempt to clean up selenium driver
+                            try:
+                                if selenium_driver:
+                                    selenium_driver.quit()
+                            except Exception:
+                                pass
+                            return
+                        else:
+                            log("Already a tester for", pkg, "- removing from watch list.")
+                            remaining.remove(pkg)
+                            continue
+
+                    # If a join/open action was taken
                     if ok:
-                        log("Action taken for", pkg, "- exiting.")
-                        return
+                        log("Action taken for", pkg, ".")
+                        # decide whether to exit on first success or continue watching others:
+                        if EXIT_ON_JOIN:
+                            try:
+                                if selenium_driver:
+                                    selenium_driver.quit()
+                            except Exception:
+                                pass
+                            return
+                        else:
+                            remaining.remove(pkg)
+                            continue
+
                 except Exception as e:
                     log("Error checking", pkg, ":", e)
                 time.sleep(PER_PACKAGE_DELAY)
-            log("Loop complete. Sleeping", CHECK_INTERVAL, "seconds.")
-            time.sleep(CHECK_INTERVAL)
+
+            if remaining:
+                log("Loop complete. Still watching:", ", ".join(sorted(remaining)))
+                log("Sleeping", CHECK_INTERVAL, "seconds.")
+                time.sleep(CHECK_INTERVAL)
     finally:
         try:
             if selenium_driver:
@@ -882,4 +925,21 @@ def main():
             pass
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="BetaSlot-Sniper")
+    parser.add_argument("--exit-on-join", action="store_true",
+                        help="Exit immediately when script successfully joins a beta")
+    parser.add_argument("--exit-on-already", action="store_true",
+                        help="Exit immediately if any package is already a tester")
+    parser.add_argument("--once", action="store_true",
+                        help="Alias for --exit-on-join and --exit-on-already (exit on first event)")
+    args = parser.parse_args()
+
+    # Set globals according to flags
+    if args.once:
+        EXIT_ON_JOIN = True
+        EXIT_ON_ALREADY = True
+    else:
+        EXIT_ON_JOIN = args.exit_on_join
+        EXIT_ON_ALREADY = args.exit_on_already
+
     main()
