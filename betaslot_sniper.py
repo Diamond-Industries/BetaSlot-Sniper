@@ -1,4 +1,5 @@
-# watch_play_beta_any_browser_auto.py
+# BetaSlot-Sniper.py
+# Automated Google Play Beta Program Slot Hunter
 # Auto-detect default Windows browser, auto-download matching webdriver, reuse profile,
 # monitor Google Play beta opt-in URLs and try to join when slot opens.
 
@@ -31,6 +32,32 @@ def log(*args, **kwargs):
 
 def testing_url(pkg):
     return f"https://play.google.com/apps/testing/{pkg}"
+
+# Function to kill browser processes
+def kill_browser_processes(browser_name):
+    try:
+        import psutil
+        browser_name = browser_name.lower()
+        if browser_name == "edge":
+            processes = ["msedge", "msedge.exe"]
+        elif browser_name == "chrome":
+            processes = ["chrome", "chrome.exe"]
+        elif browser_name == "firefox":
+            processes = ["firefox", "firefox.exe"]
+        else:
+            return
+            
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'].lower() in processes:
+                    proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        time.sleep(2)  # Wait for processes to terminate
+    except ImportError:
+        log("psutil not installed. Install with: pip install psutil")
+    except Exception as e:
+        log("Error killing browser processes:", e)
 
 # Determine default browser from registry
 def detect_default_browser():
@@ -392,58 +419,84 @@ def create_selenium_driver(browser, prepared):
         log("Selenium not installed or import failed:", e)
         return None
 
-    try:
-        driver_path = prepared.get("driver_path")
-        binary = prepared.get("binary")
+    # Try to create driver with retries
+    for attempt in range(3):  # Try up to 3 times
+        try:
+            driver_path = prepared.get("driver_path")
+            binary = prepared.get("binary")
 
-        if browser == "edge":
-            from selenium.webdriver.edge.service import Service as EdgeService
-            from selenium.webdriver.edge.options import Options as EdgeOptions
-            opts = EdgeOptions()
-            if binary:
-                opts.binary_location = binary
-            # attempt to reuse profile folder automatically (detect common locations)
-            profile_parent, profile_dir = choose_chromium_profile(browser)
-            if profile_parent:
-                opts.add_argument(f"--user-data-dir={profile_parent}")
-                if profile_dir:
-                    opts.add_argument(f"--profile-directory={profile_dir}")
-            service = EdgeService(executable_path=driver_path)
-            driver = webdriver.Edge(service=service, options=opts)
-            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-            return driver
+            if browser == "edge":
+                from selenium.webdriver.edge.service import Service as EdgeService
+                from selenium.webdriver.edge.options import Options as EdgeOptions
+                opts = EdgeOptions()
+                if binary:
+                    opts.binary_location = binary
+                
+                # Add arguments to prevent crashes
+                opts.add_argument("--no-sandbox")
+                opts.add_argument("--disable-dev-shm-usage")
+                opts.add_argument("--remote-debugging-port=9222")
+                
+                # attempt to reuse profile folder automatically (detect common locations)
+                profile_parent, profile_dir = choose_chromium_profile(browser)
+                if profile_parent:
+                    opts.add_argument(f"--user-data-dir={profile_parent}")
+                    if profile_dir:
+                        opts.add_argument(f"--profile-directory={profile_dir}")
+                
+                service = EdgeService(executable_path=driver_path)
+                driver = webdriver.Edge(service=service, options=opts)
+                driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+                return driver
 
-        if browser == "chrome":
-            from selenium.webdriver.chrome.service import Service as ChromeService
-            from selenium.webdriver.chrome.options import Options as ChromeOptions
-            opts = ChromeOptions()
-            if binary:
-                opts.binary_location = binary
-            profile_parent, profile_dir = choose_chromium_profile(browser)
-            if profile_parent:
-                opts.add_argument(f"--user-data-dir={profile_parent}")
-                if profile_dir:
-                    opts.add_argument(f"--profile-directory={profile_dir}")
-            service = ChromeService(executable_path=driver_path)
-            driver = webdriver.Chrome(service=service, options=opts)
-            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-            return driver
+            if browser == "chrome":
+                from selenium.webdriver.chrome.service import Service as ChromeService
+                from selenium.webdriver.chrome.options import Options as ChromeOptions
+                opts = ChromeOptions()
+                if binary:
+                    opts.binary_location = binary
+                
+                # Add arguments to prevent crashes
+                opts.add_argument("--no-sandbox")
+                opts.add_argument("--disable-dev-shm-usage")
+                
+                profile_parent, profile_dir = choose_chromium_profile(browser)
+                if profile_parent:
+                    opts.add_argument(f"--user-data-dir={profile_parent}")
+                    if profile_dir:
+                        opts.add_argument(f"--profile-directory={profile_dir}")
+                
+                service = ChromeService(executable_path=driver_path)
+                driver = webdriver.Chrome(service=service, options=opts)
+                driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+                return driver
 
-        if browser == "firefox":
-            from selenium.webdriver.firefox.service import Service as FirefoxService
-            from selenium.webdriver.firefox.options import Options as FirefoxOptions
-            from selenium.webdriver.firefox.firefox_profile import FirefoxProfile
-            opts = FirefoxOptions()
-            fx_profile = find_firefox_profile()
-            fp = FirefoxProfile(fx_profile) if fx_profile else None
-            service = FirefoxService(executable_path=driver_path)
-            driver = webdriver.Firefox(service=service, firefox_profile=fp, options=opts)
-            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-            return driver
+            if browser == "firefox":
+                from selenium.webdriver.firefox.service import Service as FirefoxService
+                from selenium.webdriver.firefox.options import Options as FirefoxOptions
+                from selenium.webdriver.firefox.firefox_profile import FirefoxProfile
+                
+                opts = FirefoxOptions()
+                # Add arguments to prevent crashes
+                opts.add_argument("--no-sandbox")
+                
+                fx_profile = find_firefox_profile()
+                fp = FirefoxProfile(fx_profile) if fx_profile else None
+                service = FirefoxService(executable_path=driver_path)
+                driver = webdriver.Firefox(service=service, firefox_profile=fp, options=opts)
+                driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+                return driver
 
-    except Exception as e:
-        log("Failed to create Selenium driver:", e)
-        return None
+        except Exception as e:
+            log(f"Failed to create Selenium driver (attempt {attempt + 1}/3):", e)
+            if attempt < 2:  # Not the last attempt
+                log("Killing browser processes and retrying...")
+                kill_browser_processes(browser)
+                time.sleep(3)  # Wait before retrying
+            else:
+                log("All attempts failed.")
+    
+    return None
 
 # helper to pick chromium user-data folder and profile directory
 def choose_chromium_profile(browser):
@@ -502,6 +555,22 @@ def selenium_check_and_click(driver, pkg):
         body_text = driver.find_element(By.TAG_NAME, "body").text.upper()
     except Exception:
         body_text = ""
+
+    # Check if already a tester
+    already_tester_patterns = [
+        "YOU'RE A TESTER",
+        "YOU ARE A TESTER",
+        "ALREADY A TESTER",
+        "ALREADY PARTICIPATING",
+        "ALREADY JOINED",
+        "YOU ARE PARTICIPATING",
+        "PARTICIPATING IN THIS PROGRAM"
+    ]
+    
+    for pattern in already_tester_patterns:
+        if pattern in body_text:
+            log(f"{pkg}: Already a tester (selenium). Skipping.")
+            return False
 
     # Check for full messages
     full_patterns = [
@@ -645,6 +714,22 @@ def http_check(pkg):
         log("Couldn't fetch", url)
         return False
     
+    # Check if already a tester
+    already_tester_patterns = [
+        "YOU'RE A TESTER",
+        "YOU ARE A TESTER",
+        "ALREADY A TESTER",
+        "ALREADY PARTICIPATING",
+        "ALREADY JOINED",
+        "YOU ARE PARTICIPATING",
+        "PARTICIPATING IN THIS PROGRAM"
+    ]
+    
+    for pattern in already_tester_patterns:
+        if pattern in text:
+            log(f"{pkg}: Already a tester (http). Skipping.")
+            return False
+    
     # More comprehensive check for "full" messages
     full_patterns = [
         "BETA PROGRAM IS CURRENTLY FULL",
@@ -746,6 +831,8 @@ def main():
         prepared = prepare_driver_for(browser)
         if prepared:
             log("Prepared driver:", prepared.get("driver_path"))
+            # Kill any existing browser processes before creating driver
+            kill_browser_processes(browser)
             selenium_driver = create_selenium_driver(browser, prepared)
             if selenium_driver:
                 log("Selenium driver created successfully.")
@@ -761,9 +848,24 @@ def main():
             for pkg in PACKAGES:
                 try:
                     if selenium_driver:
-                        ok = selenium_check_and_click(selenium_driver, pkg)
+                        # Check if driver is still responsive
+                        try:
+                            selenium_driver.current_url  # Simple check to see if driver is alive
+                        except Exception:
+                            log("Selenium driver crashed. Recreating...")
+                            selenium_driver.quit()
+                            kill_browser_processes(browser)
+                            selenium_driver = create_selenium_driver(browser, prepared)
+                            if not selenium_driver:
+                                log("Failed to recreate Selenium driver - switching to HTTP polling.")
+                        
+                        if selenium_driver:
+                            ok = selenium_check_and_click(selenium_driver, pkg)
+                        else:
+                            ok = http_check(pkg)
                     else:
                         ok = http_check(pkg)
+                    
                     if ok:
                         log("Action taken for", pkg, "- exiting.")
                         return
