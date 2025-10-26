@@ -32,9 +32,45 @@ EXIT_ON_ALREADY = False     # if True, exit immediately when an already-enrolled
 DRIVER_BASE_DIR = os.path.join(os.path.expanduser("~"), ".selenium_drivers")
 os.makedirs(DRIVER_BASE_DIR, exist_ok=True)
 
-# ---- Helpers ----
+# ---- Colored Console Output ----
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+def log_success(*args, **kwargs):
+    print(f"{Colors.GREEN}[ SUCCESS ]{Colors.RESET} [{datetime.now()}]", *args, **kwargs)
+
+def log_warning(*args, **kwargs):
+    print(f"{Colors.YELLOW}[ WARNING ]{Colors.RESET} [{datetime.now()}]", *args, **kwargs)
+
+def log_error(*args, **kwargs):
+    print(f"{Colors.RED}[  ERROR  ]{Colors.RESET} [{datetime.now()}]", *args, **kwargs)
+
+def log_info(*args, **kwargs):
+    print(f"{Colors.CYAN}[   INFO  ]{Colors.RESET} [{datetime.now()}]", *args, **kwargs)
+
+def log_debug(*args, **kwargs):
+    print(f"{Colors.BLUE}[  DEBUG  ]{Colors.RESET} [{datetime.now()}]", *args, **kwargs)
+
+# Backward compatibility
 def log(*args, **kwargs):
-    print(f"[{datetime.now()}]", *args, **kwargs)
+    log_info(*args, **kwargs)
+
+def print_welcome():
+    """Display welcome banner"""
+    print(f"{Colors.BOLD}{Colors.CYAN}{'='*100}")
+    print(f"🚀 WELCOME TO BETA-SLOT SNIPER")
+    print(f"{'='*100}{Colors.RESET}")
+    print(f"{Colors.WHITE}• Monitoring {len(PACKAGES)} packages for beta slot availability")
+    print(f"• Check interval: {CHECK_INTERVAL} seconds")
+    print(f"• Press Ctrl+C to stop monitoring")
+    print(f"{Colors.CYAN}{'='*100}{Colors.RESET}")
 
 def testing_url(pkg):
     return f"https://play.google.com/apps/testing/{pkg}"
@@ -61,9 +97,9 @@ def kill_browser_processes(browser_name):
                 pass
         time.sleep(2)  # Wait for processes to terminate
     except ImportError:
-        log("psutil not installed. Install with: pip install psutil")
+        log_warning("psutil not installed. Install with: pip install psutil")
     except Exception as e:
-        log("Error killing browser processes:", e)
+        log_error("Error killing browser processes:", e)
 
 # Determine default browser from registry
 def detect_default_browser():
@@ -131,50 +167,66 @@ def find_browser_binary(browser):
             return c
     return None
 
+# Enhanced browser version detection
 def get_browser_version(exe_path):
+    """Enhanced browser version detection with multiple fallback methods"""
     if not exe_path or not os.path.exists(exe_path):
         return None
         
     try:
-        # Try different version query methods
-        methods = [
-            # Method 1: --version flag
-            lambda: subprocess.check_output([exe_path, "--version"], 
-                                          stderr=subprocess.STDOUT, 
-                                          timeout=5,
-                                          creationflags=subprocess.CREATE_NO_WINDOW),
-            # Method 2: --product-version flag  
-            lambda: subprocess.check_output([exe_path, "--product-version"],
-                                          stderr=subprocess.STDOUT,
-                                          timeout=5,
-                                          creationflags=subprocess.CREATE_NO_WINDOW),
-            # Method 3: WMIC (for Windows)
-            lambda: subprocess.check_output(['wmic', 'datafile', 'where', f'name="{exe_path}"', 'get', 'Version', '/value'],
-                                          stderr=subprocess.STDOUT,
-                                          timeout=5,
-                                          creationflags=subprocess.CREATE_NO_WINDOW),
-            # Method 4: PowerShell (for Windows)
-            lambda: subprocess.check_output([
+        # Method 1: Try --version flag (most reliable)
+        try:
+            result = subprocess.check_output([exe_path, "--version"], 
+                                        stderr=subprocess.STDOUT, 
+                                        timeout=5,
+                                        creationflags=subprocess.CREATE_NO_WINDOW)
+            version_text = result.decode(errors="ignore").strip()
+            version_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', version_text)
+            if version_match:
+                return version_match.group(1)
+        except Exception:
+            pass
+            
+        # Method 2: Try --product-version flag
+        try:
+            result = subprocess.check_output([exe_path, "--product-version"],
+                                        stderr=subprocess.STDOUT,
+                                        timeout=5,
+                                        creationflags=subprocess.CREATE_NO_WINDOW)
+            version_text = result.decode(errors="ignore").strip()
+            version_match = re.search(r'(\d+\.\d+\.\d+\.\d+|\d+\.\d+\.\d+|\d+\.\d+)', version_text)
+            if version_match:
+                return version_match.group(1)
+        except Exception:
+            pass
+            
+        # Method 3: Windows registry lookup (for Edge)
+        if "edge" in exe_path.lower():
+            try:
+                import winreg
+                key_path = r"SOFTWARE\Microsoft\Edge\BLBeacon"
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                    version, _ = winreg.QueryValueEx(key, "version")
+                    return version
+            except Exception:
+                pass
+                
+        # Method 4: File properties via PowerShell
+        try:
+            result = subprocess.check_output([
                 'powershell', 
                 '-command', 
-                f'(Get-ItemProperty "{exe_path}").VersionInfo.ProductVersion'
-            ], stderr=subprocess.STDOUT, timeout=5),
-        ]
-        
-        for method in methods:
-            try:
-                out = method()
-                s = out.decode(errors="ignore").strip()
-                
-                # Extract version using regex
-                version_match = re.search(r'(\d+\.\d+\.\d+\.\d+|\d+\.\d+\.\d+|\d+\.\d+)', s)
-                if version_match:
-                    return version_match.group(1)
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
-                continue
-                
+                f'(Get-Item "{exe_path}").VersionInfo.ProductVersion'
+            ], stderr=subprocess.STDOUT, timeout=5, shell=True)
+            version_text = result.decode(errors="ignore").strip()
+            version_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', version_text)
+            if version_match:
+                return version_match.group(1)
+        except Exception:
+            pass
+            
     except Exception as e:
-        log("Could not query browser version:", e)
+        log_error(f"Could not query browser version for {exe_path}: {e}")
     
     return None
 
@@ -182,7 +234,7 @@ def get_browser_version(exe_path):
 def download_file(url, dest_path, show_log=True):
     try:
         if show_log:
-            log("Downloading", url)
+            log_info("Downloading", url)
         with urllib.request.urlopen(url, timeout=30) as r:
             total = r.getheader("Content-Length")
             total = int(total) if total and total.isdigit() else None
@@ -196,10 +248,10 @@ def download_file(url, dest_path, show_log=True):
                     f.write(data)
                     downloaded += len(data)
         if show_log:
-            log("Saved to", dest_path)
+            log_success("Saved to", dest_path)
         return True
     except Exception as e:
-        log("Download failed:", e)
+        log_error("Download failed:", e)
         return False
 
 # extract zip
@@ -209,22 +261,22 @@ def extract_zip(zip_path, dest_dir):
             z.extractall(dest_dir)
         return True
     except Exception as e:
-        log("Unzip failed:", e)
+        log_error("Unzip failed:", e)
         return False
 
-# ---- driver downloaders ----
+# ---- Enhanced driver downloaders ----
 def ensure_edge_driver(browser_exe, browser_version):
-    # If browser_version is None, try to get the latest stable version
+    """Enhanced Edge WebDriver download with better version matching"""
     if not browser_version:
         try:
             latest_url = "https://msedgedriver.azureedge.net/LATEST_STABLE"
             with urllib.request.urlopen(latest_url, timeout=10) as r:
                 browser_version = r.read().decode().strip()
         except Exception as e:
-            log("Failed to get latest stable Edge version:", e)
+            log_error("Failed to get latest stable Edge version:", e)
             return None
 
-    # Try exact version first
+    # First try: Exact version match
     zip_url = f"https://msedgedriver.azureedge.net/{browser_version}/edgedriver_win64.zip"
     dest_zip = os.path.join(DRIVER_BASE_DIR, f"msedgedriver_{browser_version}.zip")
     out_dir = os.path.join(DRIVER_BASE_DIR, f"msedgedriver_{browser_version}")
@@ -235,19 +287,23 @@ def ensure_edge_driver(browser_exe, browser_version):
             return candidate
             
     # Try downloading the exact version
-    if download_file(zip_url, dest_zip, show_log=False):
+    if download_file(zip_url, dest_zip, show_log=True):
         if extract_zip(dest_zip, out_dir):
             for root, dirs, files in os.walk(out_dir):
                 if "msedgedriver.exe" in files:
+                    log_success(f"Successfully downloaded Edge WebDriver {browser_version}")
                     return os.path.join(root, "msedgedriver.exe")
     
-    # If exact version not found, try major version
-    major = browser_version.split(".")[0] if browser_version else None
+    # Second try: Major version matching with fallback
+    major = browser_version.split('.')[0] if browser_version else None
     if major:
         try:
+            # Try getting the latest release for this major version
             latest_url = f"https://msedgedriver.azureedge.net/LATEST_RELEASE_{major}"
             with urllib.request.urlopen(latest_url, timeout=10) as r:
                 latest_ver = r.read().decode().strip()
+            
+            log_info(f"Trying WebDriver for major version {major}: {latest_ver}")
             
             zip_url = f"https://msedgedriver.azureedge.net/{latest_ver}/edgedriver_win64.zip"
             dest_zip = os.path.join(DRIVER_BASE_DIR, f"msedgedriver_{latest_ver}.zip")
@@ -258,48 +314,74 @@ def ensure_edge_driver(browser_exe, browser_version):
                 if os.path.exists(candidate):
                     return candidate
                     
-            if download_file(zip_url, dest_zip):
+            if download_file(zip_url, dest_zip, show_log=True):
                 if extract_zip(dest_zip, out_dir):
                     for root, dirs, files in os.walk(out_dir):
                         if "msedgedriver.exe" in files:
+                            log_success(f"Successfully downloaded Edge WebDriver {latest_ver} for major version {major}")
                             return os.path.join(root, "msedgedriver.exe")
         except Exception as e:
-            log("Failed to get Edge driver for major version:", e)
+            log_error(f"Failed to get Edge driver for major version {major}: {e}")
+    
+    # Final fallback: Use latest stable
+    try:
+        log_info("Attempting to download latest stable WebDriver as fallback")
+        latest_url = "https://msedgedriver.azureedge.net/LATEST_STABLE"
+        with urllib.request.urlopen(latest_url, timeout=10) as r:
+            latest_stable = r.read().decode().strip()
+        
+        zip_url = f"https://msedgedriver.azureedge.net/{latest_stable}/edgedriver_win64.zip"
+        dest_zip = os.path.join(DRIVER_BASE_DIR, f"msedgedriver_{latest_stable}.zip")
+        out_dir = os.path.join(DRIVER_BASE_DIR, f"msedgedriver_{latest_stable}")
+        
+        if download_file(zip_url, dest_zip, show_log=True):
+            if extract_zip(dest_zip, out_dir):
+                for root, dirs, files in os.walk(out_dir):
+                    if "msedgedriver.exe" in files:
+                        log_success(f"Successfully downloaded latest stable Edge WebDriver: {latest_stable}")
+                        return os.path.join(root, "msedgedriver.exe")
+    except Exception as e:
+        log_error("All Edge WebDriver download attempts failed:", e)
     
     return None
 
 def ensure_chrome_driver(browser_version):
+    """Enhanced ChromeDriver download with better version handling"""
     if not browser_version:
         return None
         
-    major = browser_version.split(".")[0] if browser_version else None
+    major = browser_version.split('.')[0] if browser_version else None
     if not major:
         return None
         
-    # get LATEST_RELEASE_{major}
     try:
+        # Get the latest ChromeDriver for this major version
         url_version = f"https://chromedriver.storage.googleapis.com/LATEST_RELEASE_{major}"
         with urllib.request.urlopen(url_version, timeout=10) as r:
             dr_version = r.read().decode().strip()
+        
+        log_info(f"Downloading ChromeDriver {dr_version} for Chrome {browser_version}")
+        
+        zip_url = f"https://chromedriver.storage.googleapis.com/{dr_version}/chromedriver_win32.zip"
+        dest_zip = os.path.join(DRIVER_BASE_DIR, f"chromedriver_{dr_version}.zip")
+        out_dir = os.path.join(DRIVER_BASE_DIR, f"chromedriver_{dr_version}")
+        
+        if os.path.exists(out_dir):
+            candidate = os.path.join(out_dir, "chromedriver.exe")
+            if os.path.exists(candidate):
+                return candidate
+                
+        if download_file(zip_url, dest_zip, show_log=True):
+            if extract_zip(dest_zip, out_dir):
+                for root, dirs, files in os.walk(out_dir):
+                    if "chromedriver.exe" in files:
+                        log_success(f"Successfully downloaded ChromeDriver {dr_version}")
+                        return os.path.join(root, "chromedriver.exe")
+                        
     except Exception as e:
-        log("Could not fetch chromedriver latest for major:", e)
+        log_error(f"Could not fetch ChromeDriver for major version {major}: {e}")
         return None
         
-    zip_url = f"https://chromedriver.storage.googleapis.com/{dr_version}/chromedriver_win32.zip"
-    dest_zip = os.path.join(DRIVER_BASE_DIR, f"chromedriver_{dr_version}.zip")
-    out_dir = os.path.join(DRIVER_BASE_DIR, f"chromedriver_{dr_version}")
-    
-    if os.path.exists(out_dir):
-        candidate = os.path.join(out_dir, "chromedriver.exe")
-        if os.path.exists(candidate):
-            return candidate
-            
-    if download_file(zip_url, dest_zip):
-        if extract_zip(dest_zip, out_dir):
-            for root, dirs, files in os.walk(out_dir):
-                if "chromedriver.exe" in files:
-                    return os.path.join(root, "chromedriver.exe")
-                    
     return None
 
 def ensure_gecko_driver():
@@ -330,90 +412,93 @@ def ensure_gecko_driver():
             if extract_zip(dest_zip, out_dir):
                 for root, dirs, files in os.walk(out_dir):
                     if "geckodriver.exe" in files:
+                        log_success(f"Successfully downloaded geckodriver {tag}")
                         return os.path.join(root, "geckodriver.exe")
     except Exception as e:
-        log("Failed to fetch geckodriver:", e)
+        log_error("Failed to fetch geckodriver:", e)
         
     return None
 
-# Try to prepare driver for the given browser
+# Enhanced driver preparation with better error handling
 def prepare_driver_for(browser):
-    log("Preparing driver for", browser)
-    bin_path = find_browser_binary(browser)
+    """Enhanced driver preparation with comprehensive error handling"""
+    log_info(f"Preparing driver for {browser}")
     
+    # Find browser binary
+    bin_path = find_browser_binary(browser)
     if not bin_path:
-        log("Could not find browser binary for", browser)
+        log_error(f"Could not find browser binary for {browser}")
         return None
         
-    log("Found browser binary:", bin_path)
+    log_info(f"Found browser binary: {bin_path}")
+    
+    # Get browser version
     version = get_browser_version(bin_path)
-    log("Browser version:", version)
+    if not version:
+        log_warning(f"Could not determine {browser} version")
+        # Continue anyway, the downloader will try to get latest stable
+    else:
+        log_info(f"Browser version: {version}")
     
-    # First, check if driver already exists in the driver directory
+    # Check for existing drivers with more flexible matching
     driver_files = []
-    if browser == "edge":
-        driver_pattern = os.path.join(DRIVER_BASE_DIR, "msedgedriver*.exe")
-        driver_files = [f for f in [os.path.join(DRIVER_BASE_DIR, "msedgedriver.exe")] if os.path.exists(f)]
-        driver_files.extend([f for f in [os.path.join(DRIVER_BASE_DIR, f"msedgedriver_{version}.exe")] if os.path.exists(f)])
-        
-    elif browser == "chrome":
-        driver_pattern = os.path.join(DRIVER_BASE_DIR, "chromedriver*.exe")
-        driver_files = [f for f in [os.path.join(DRIVER_BASE_DIR, "chromedriver.exe")] if os.path.exists(f)]
-        driver_files.extend([f for f in [os.path.join(DRIVER_BASE_DIR, f"chromedriver_{version}.exe")] if os.path.exists(f)])
-        
-    elif browser == "firefox":
-        driver_pattern = os.path.join(DRIVER_BASE_DIR, "geckodriver*.exe")
-        driver_files = [f for f in [os.path.join(DRIVER_BASE_DIR, "geckodriver.exe")] if os.path.exists(f)]
+    driver_patterns = {
+        "edge": ["msedgedriver*.exe", "edgedriver*.exe"],
+        "chrome": ["chromedriver*.exe"],
+        "firefox": ["geckodriver*.exe"]
+    }
     
-    # Check for any driver file in the directory
-    for root, dirs, files in os.walk(DRIVER_BASE_DIR):
-        for file in files:
-            if browser == "edge" and "msedgedriver" in file.lower() and file.endswith(".exe"):
-                driver_files.append(os.path.join(root, file))
-            elif browser == "chrome" and "chromedriver" in file.lower() and file.endswith(".exe"):
-                driver_files.append(os.path.join(root, file))
-            elif browser == "firefox" and "geckodriver" in file.lower() and file.endswith(".exe"):
-                driver_files.append(os.path.join(root, file))
+    patterns = driver_patterns.get(browser, [])
+    for pattern in patterns:
+        for root, dirs, files in os.walk(DRIVER_BASE_DIR):
+            for file in files:
+                if file.lower().endswith('.exe'):
+                    full_path = os.path.join(root, file)
+                    driver_files.append(full_path)
     
     # Use the first found driver
     if driver_files:
         driver_path = driver_files[0]
-        log("Found existing driver:", driver_path)
-        return {"driver_path": driver_path, "binary": bin_path}
+        log_success(f"Found existing driver: {driver_path}")
+        return {"driver_path": driver_path, "binary": bin_path, "version": version}
     
     # If no existing driver found, try to download
+    log_info(f"No existing driver found, attempting to download...")
+    
     if browser == "edge":
         driver = ensure_edge_driver(bin_path, version)
         if driver:
-            log("Got msedgedriver:", driver)
-            return {"driver_path": driver, "binary": bin_path}
+            log_success(f"Successfully obtained msedgedriver: {driver}")
+            return {"driver_path": driver, "binary": bin_path, "version": version}
         else:
-            log("Could not download Edge driver automatically")
-            log("Please download it manually from: https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/")
-            log("Place it in:", DRIVER_BASE_DIR)
+            log_error("Could not download Edge driver automatically")
+            log_info("Please download it manually from: https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/")
+            log_info(f"Place it in: {DRIVER_BASE_DIR}")
             return None
+            
     elif browser == "chrome":
         driver = ensure_chrome_driver(version)
         if driver:
-            log("Got chromedriver:", driver)
-            return {"driver_path": driver, "binary": bin_path}
+            log_success(f"Successfully obtained chromedriver: {driver}")
+            return {"driver_path": driver, "binary": bin_path, "version": version}
         else:
-            log("Could not download Chrome driver automatically")
-            log("Please download it manually from: https://chromedriver.chromium.org/")
-            log("Place it in:", DRIVER_BASE_DIR)
+            log_error("Could not download Chrome driver automatically")
+            log_info("Please download it manually from: https://chromedriver.chromium.org/")
+            log_info(f"Place it in: {DRIVER_BASE_DIR}")
             return None
+            
     elif browser == "firefox":
         driver = ensure_gecko_driver()
         if driver:
-            log("Got geckodriver:", driver)
-            return {"driver_path": driver, "binary": bin_path}
+            log_success(f"Successfully obtained geckodriver: {driver}")
+            return {"driver_path": driver, "binary": bin_path, "version": version}
         else:
-            log("Could not download Firefox driver automatically")
-            log("Please download it manually from: https://github.com/mozilla/geckodriver/releases")
-            log("Place it in:", DRIVER_BASE_DIR)
+            log_error("Could not download Firefox driver automatically")
+            log_info("Please download it manually from: https://github.com/mozilla/geckodriver/releases")
+            log_info(f"Place it in: {DRIVER_BASE_DIR}")
             return None
-            
-    log("Could not prepare driver for", browser)
+    
+    log_error(f"Could not prepare driver for {browser}")
     return None
 
 # Selenium driver creation with explicit driver path + profile reuse
@@ -422,7 +507,7 @@ def create_selenium_driver(browser, prepared):
         from selenium import webdriver
         from selenium.webdriver.common.by import By
     except Exception as e:
-        log("Selenium not installed or import failed:", e)
+        log_error("Selenium not installed or import failed:", e)
         return None
 
     # Try to create driver with retries
@@ -438,10 +523,22 @@ def create_selenium_driver(browser, prepared):
                 if binary:
                     opts.binary_location = binary
                 
-                # Add arguments to prevent crashes
+                # Enhanced Edge options for better compatibility and to suppress warnings
                 opts.add_argument("--no-sandbox")
                 opts.add_argument("--disable-dev-shm-usage")
                 opts.add_argument("--remote-debugging-port=9222")
+                opts.add_argument("--disable-blink-features=AutomationControlled")
+                opts.add_argument("--log-level=3")  # Suppress browser logs
+                opts.add_argument("--disable-logging")
+                opts.add_argument("--disable-gpu")
+                opts.add_argument("--disable-software-rasterizer")
+                opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+                opts.add_experimental_option('useAutomationExtension', False)
+                
+                # Suppress WebDriver manager logs
+                import logging
+                selenium_logger = logging.getLogger('selenium')
+                selenium_logger.setLevel(logging.WARNING)
                 
                 # attempt to reuse profile folder automatically (detect common locations)
                 profile_parent, profile_dir = choose_chromium_profile(browser)
@@ -450,10 +547,17 @@ def create_selenium_driver(browser, prepared):
                     if profile_dir:
                         opts.add_argument(f"--profile-directory={profile_dir}")
                 
-                service = EdgeService(executable_path=driver_path)
-                driver = webdriver.Edge(service=service, options=opts)
-                driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-                return driver
+                service = EdgeService(executable_path=driver_path, service_args=['--silent'])
+                
+                try:
+                    driver = webdriver.Edge(service=service, options=opts)
+                    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+                    # Hide automation indicators
+                    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                    return driver
+                except Exception as e:
+                    log_error(f"Edge driver creation failed: {e}")
+                    return None
 
             if browser == "chrome":
                 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -462,9 +566,13 @@ def create_selenium_driver(browser, prepared):
                 if binary:
                     opts.binary_location = binary
                 
-                # Add arguments to prevent crashes
+                # Add arguments to prevent crashes and suppress logs
                 opts.add_argument("--no-sandbox")
                 opts.add_argument("--disable-dev-shm-usage")
+                opts.add_argument("--log-level=3")
+                opts.add_argument("--disable-logging")
+                opts.add_argument("--disable-gpu")
+                opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
                 
                 profile_parent, profile_dir = choose_chromium_profile(browser)
                 if profile_parent:
@@ -472,7 +580,7 @@ def create_selenium_driver(browser, prepared):
                     if profile_dir:
                         opts.add_argument(f"--profile-directory={profile_dir}")
                 
-                service = ChromeService(executable_path=driver_path)
+                service = ChromeService(executable_path=driver_path, service_args=['--silent'])
                 driver = webdriver.Chrome(service=service, options=opts)
                 driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
                 return driver
@@ -485,22 +593,23 @@ def create_selenium_driver(browser, prepared):
                 opts = FirefoxOptions()
                 # Add arguments to prevent crashes
                 opts.add_argument("--no-sandbox")
+                opts.add_argument("--log-level=3")
                 
                 fx_profile = find_firefox_profile()
                 fp = FirefoxProfile(fx_profile) if fx_profile else None
-                service = FirefoxService(executable_path=driver_path)
+                service = FirefoxService(executable_path=driver_path, service_args=['--silent'])
                 driver = webdriver.Firefox(service=service, firefox_profile=fp, options=opts)
                 driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
                 return driver
 
         except Exception as e:
-            log(f"Failed to create Selenium driver (attempt {attempt + 1}/3):", e)
+            log_error(f"Failed to create Selenium driver (attempt {attempt + 1}/3):", e)
             if attempt < 2:  # Not the last attempt
-                log("Killing browser processes and retrying...")
+                log_warning("Killing browser processes and retrying...")
                 kill_browser_processes(browser)
                 time.sleep(3)  # Wait before retrying
             else:
-                log("All attempts failed.")
+                log_error("All attempts failed.")
     
     return None
 
@@ -538,48 +647,39 @@ def find_firefox_profile():
                 return os.path.join(ff_profile_path, profile)
     return None
 
-# ---- detection & click logic using Selenium ----
-def selenium_check_and_click(driver, pkg):
+# ---- Enhanced detection & click logic using Selenium ----
+def enhanced_selenium_check_and_click(driver, pkg):
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
 
     url = testing_url(pkg)
-    log("Loading (selenium)", url)
+    log_info(f"Checking: {pkg}")
+    
     try:
         driver.get(url)
+        WebDriverWait(driver, DOM_WAIT).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
     except Exception as e:
-        log("driver.get failed:", e)
+        log_error(f"Page load failed: {e}")
         return False
 
-    try:
-        WebDriverWait(driver, DOM_WAIT).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    except Exception:
-        pass
+    page_text = driver.page_source.upper()
+    body_text = driver.find_element(By.TAG_NAME, "body").text.upper()
 
-    try:
-        body_text = driver.find_element(By.TAG_NAME, "body").text.upper()
-    except Exception:
-        body_text = ""
-
-    # Check if already a tester
-    already_tester_patterns = [
-        "YOU'RE A TESTER",
-        "YOU ARE A TESTER",
-        "ALREADY A TESTER",
-        "ALREADY PARTICIPATING",
-        "ALREADY JOINED",
-        "YOU ARE PARTICIPATING",
-        "PARTICIPATING IN THIS PROGRAM"
+    # Enhanced SUCCESS detection
+    success_indicators = [
+        "YOU'RE A TESTER", "YOU ARE A TESTER", "SUCCESSFULLY JOINED", 
+        "THANKS FOR JOINING", "WELCOME TO THE BETA", "YOU'VE JOINED THE BETA",
+        "ENROLLMENT SUCCESSFUL", "NOW A BETA TESTER", "PARTICIPATING IN THIS PROGRAM"
     ]
     
-    for pattern in already_tester_patterns:
-        if pattern in body_text:
-            log(f"{pkg}: Already a tester (selenium).")
-            # do not quit driver here; let main decide to close or reuse
+    for indicator in success_indicators:
+        if indicator in page_text:
             return "ALREADY_TESTER"
 
-    # Check for full messages
+    # Enhanced FULL/BLOCKED detection with specific Android Auto message
     full_patterns = [
         "BETA PROGRAM IS CURRENTLY FULL",
         "BETA PROGRAM IS FULL",
@@ -590,114 +690,137 @@ def selenium_check_and_click(driver, pkg):
         "BETA IS FULL",
         "TESTING IS FULL",
         "CLOSED",
-        "NOT ACCEPTING"
+        "NOT ACCEPTING",
+        "REACHED THE MAXIMUM NUMBER OF TESTERS",
+        "ISN'T ACCEPTING ANY MORE TESTERS",
+        "THANKS FOR YOUR INTEREST IN BECOMING A TESTER"
     ]
     
     for pattern in full_patterns:
         if pattern in body_text:
-            log(f"{pkg}: beta FULL (selenium).")
+            log_warning(f"{pkg}: Beta program is FULL")
             return False
 
-    # Try to find and submit the form directly using Selenium only
-    try:
-        # Look for the form with class 'joinForm'
-        forms = driver.find_elements(By.CSS_SELECTOR, "form.joinForm")
-        if forms:
-            log("Found join form - attempting to submit using Selenium")
-            
-            # Find the submit button and click it
-            submit_buttons = forms[0].find_elements(By.CSS_SELECTOR, "input[type='submit'].action")
-            if submit_buttons:
-                log("Clicking submit button")
-                submit_buttons[0].click()
-                time.sleep(5)  # Wait for form submission
-                
-                # Check for success indicators
-                success_indicators = [
-                    "YOU'RE A TESTER",
-                    "YOU ARE A TESTER",
-                    "SUCCESSFULLY JOINED",
-                    "THANKS FOR JOINING"
-                ]
-                
-                page_source = driver.page_source.upper()
-                for indicator in success_indicators:
-                    if indicator in page_source:
-                        log("Successfully joined beta program!")
-                        return True
-                
-                log("Form submitted but success not confirmed. Opening browser for manual verification.")
-                webbrowser.open(url)
-                return True
-                
-    except Exception as e:
-        log("Error submitting form with Selenium:", e)
-
-    # Try multiple click strategies as fallback
-    xpath_strategies = [
-        # Button with join/beta text
-        "//input[@type='submit' and @class='action']",
-        "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'join') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'become') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'participate')]",
-        
-        # Any element with beta join text
-        "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'beta') and (contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'join') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'become'))]",
-        
-        # Form submit buttons
-        "//input[@type='submit' or @type='button']",
-        
-        # Any clickable element that might be the join button
-        "//*[@role='button' or @class*='button' or contains(@class, 'btn')]"
-    ]
-
-    for xpath in xpath_strategies:
-        try:
-            elements = driver.find_elements(By.XPATH, xpath)
-            for element in elements:
-                try:
-                    if element.is_displayed() and element.is_enabled():
-                        log("Found clickable element - attempting to click.")
-                        element.click()
-                        time.sleep(5)  # Wait longer for form submission
-                        log("Clicked successfully! Checking if enrollment was successful.")
-                        
-                        # Check for success
-                        driver.refresh()
-                        time.sleep(3)
-                        
-                        success_indicators = [
-                            "YOU'RE A TESTER",
-                            "YOU ARE A TESTER",
-                            "SUCCESSFULLY JOINED",
-                            "THANKS FOR JOINING"
-                        ]
-                        
-                        page_source = driver.page_source.upper()
-                        for indicator in success_indicators:
-                            if indicator in page_source:
-                                log("Successfully joined beta program!")
-                                return True
-                        
-                        log("Clicked but success not confirmed. Opening browser for manual verification.")
-                        webbrowser.open(url)
-                        return True
-                except Exception:
-                    continue
-        except Exception:
-            continue
-
-    # If no click worked but we see join text, open browser
-    join_patterns = [
-        "BECOME A TESTER", "Become a tester", "JOIN THE BETA", "Join the beta", "JOIN BETA", "Join beta", "JOIN TESTING", "Join testing",
-        "PARTICIPATE IN BETA", "Participate in beta", "BETA TESTER PROGRAM", "Beta tester program", "ACCEPT INVITATION", "Accept invitation"
+    # Enhanced AVAILABLE detection
+    available_patterns = [
+        "BECOME A TESTER", "JOIN THE BETA", "JOIN BETA", "JOIN TESTING",
+        "PARTICIPATE IN BETA", "BETA TESTER PROGRAM", "ACCEPT INVITATION",
+        "JOIN THE TEST", "JOIN THE PROGRAM", "JOIN PROGRAM", "JOIN NOW",
+        "SIGN UP", "BECOME A BETA TESTER", "PARTICIPATE IN THE BETA",
+        "I'M IN", "ACCEPT", "PARTICIPATE", "ENROLL", "OPT-IN"
     ]
     
-    for pattern in join_patterns:
+    # Check if beta is available
+    beta_available = False
+    for pattern in available_patterns:
         if pattern in body_text:
-            log("Detected opt-in text but couldn't click automatically. Opening for manual finish.")
-            webbrowser.open(url)
-            return True
+            beta_available = True
+            log_info(f"Beta available detected for {pkg}")
+            break
 
-    log("No opt-in found (selenium).")
+    if not beta_available:
+        return False
+
+    # Enhanced form detection and submission strategies
+    join_strategies = [
+        # Strategy 1: Direct form submission
+        lambda: submit_beta_form(driver),
+        # Strategy 2: Button clicking
+        lambda: click_beta_buttons(driver),
+        # Strategy 3: JavaScript execution
+        lambda: js_beta_join(driver),
+    ]
+    
+    for strategy in join_strategies:
+        try:
+            result = strategy()
+            if result:
+                log_success(f"Join action performed for {pkg}")
+                # Verify success after action
+                time.sleep(3)
+                driver.refresh()
+                page_text = driver.page_source.upper()
+                
+                # Check if we successfully joined
+                for indicator in success_indicators:
+                    if indicator in page_text:
+                        log_success(f"🎉 SUCCESS! Joined beta program for {pkg}!")
+                        return "SUCCESS"
+                
+                log_warning("Action performed but success not confirmed. Opening browser for manual verification.")
+                webbrowser.open(url)
+                return "MANUAL_VERIFICATION_NEEDED"
+        except Exception as e:
+            continue
+    
+    # If all strategies fail but beta is available, open browser
+    log_warning("Could not automate join process. Opening browser for manual attempt.")
+    webbrowser.open(url)
+    return "MANUAL_ATTEMPT_NEEDED"
+
+def submit_beta_form(driver):
+    """Try to find and submit beta join forms"""
+    from selenium.webdriver.common.by import By
+    
+    forms = driver.find_elements(By.CSS_SELECTOR, "form")
+    for form in forms:
+        form_html = form.get_attribute('outerHTML').upper()
+        if any(keyword in form_html for keyword in ['BETA', 'TEST', 'JOIN', 'ENROLL', 'PARTICIPATE']):
+            # Find submit buttons
+            submits = form.find_elements(By.CSS_SELECTOR, 
+                "input[type='submit'], button[type='submit'], input[type='button']")
+            for submit in submits:
+                if submit.is_displayed() and submit.is_enabled():
+                    log_info("Found beta form - submitting")
+                    submit.click()
+                    return True
+    return False
+
+def click_beta_buttons(driver):
+    """Click buttons with beta-related text"""
+    from selenium.webdriver.common.by import By
+    
+    buttons = driver.find_elements(By.XPATH, 
+        "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'join') or "
+        "contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'beta') or "
+        "contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'enroll') or "
+        "contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'become') or "
+        "contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'participate')]")
+    
+    for button in buttons:
+        try:
+            if button.is_displayed() and button.is_enabled():
+                button_text = button.text.upper()
+                if any(keyword in button_text for keyword in ['JOIN', 'BETA', 'ENROLL', 'BECOME', 'PARTICIPATE']):
+                    log_info(f"Clicking beta button: {button_text}")
+                    button.click()
+                    return True
+        except:
+            continue
+    return False
+
+def js_beta_join(driver):
+    """Try to join beta using JavaScript"""
+    try:
+        # Try to find and click any element that might be the join button
+        script = """
+        var elements = document.querySelectorAll('button, input[type="submit"], a, div[role="button"]');
+        for (var i = 0; i < elements.length; i++) {
+            var element = elements[i];
+            var text = (element.textContent || element.innerText || element.value || '').toLowerCase();
+            if (text.includes('join') || text.includes('beta') || text.includes('enroll') || text.includes('become')) {
+                element.click();
+                return true;
+            }
+        }
+        return false;
+        """
+        result = driver.execute_script(script)
+        if result:
+            log_info("JavaScript join attempt successful")
+            return True
+    except Exception as e:
+        pass
     return False
 
 # ---- fallback http check ----
@@ -710,126 +833,73 @@ def fetch_page_text(url, timeout=15):
             text = b.decode("utf-8", errors="replace")
             return text.upper()
     except Exception as e:
-        log("HTTP fetch failed:", e)
+        log_error("HTTP fetch failed:", e)
         return None
 
 def http_check(pkg):
     url = testing_url(pkg)
-    log("Loading (http)", url)
+    log_info("HTTP check:", pkg)
     text = fetch_page_text(url)
     if not text:
-        log("Couldn't fetch", url)
+        log_error("Couldn't fetch", url)
         return False
     
     # Check if already a tester
     already_tester_patterns = [
-        "YOU'RE A TESTER",
-        "YOU ARE A TESTER",
-        "ALREADY A TESTER",
-        "ALREADY PARTICIPATING",
-        "ALREADY JOINED",
-        "YOU ARE PARTICIPATING",
+        "YOU'RE A TESTER", "YOU ARE A TESTER", "ALREADY A TESTER",
+        "ALREADY PARTICIPATING", "ALREADY JOINED", "YOU ARE PARTICIPATING",
         "PARTICIPATING IN THIS PROGRAM"
     ]
     
     for pattern in already_tester_patterns:
         if pattern in text:
-            log(f"{pkg}: Already a tester (http).")
             return "ALREADY_TESTER"
     
-    # More comprehensive check for "full" messages
+    # Enhanced FULL detection with Android Auto specific message
     full_patterns = [
-        "BETA PROGRAM IS CURRENTLY FULL",
-        "BETA PROGRAM IS FULL",
-        "THE BETA PROGRAM FOR THIS APP IS CURRENTLY FULL",
-        "BETA TESTER LIMIT HAS BEEN REACHED",
-        "NO MORE TESTERS ARE BEING ACCEPTED",
-        "BETA TESTING IS FULL",
-        "BETA IS FULL",
-        "TESTING IS FULL",
-        "CLOSED",
-        "NOT ACCEPTING"
+        "BETA PROGRAM IS CURRENTLY FULL", "BETA PROGRAM IS FULL",
+        "THE BETA PROGRAM FOR THIS APP IS CURRENTLY FULL", "BETA TESTER LIMIT HAS BEEN REACHED",
+        "NO MORE TESTERS ARE BEING ACCEPTED", "BETA TESTING IS FULL", "BETA IS FULL",
+        "TESTING IS FULL", "CLOSED", "NOT ACCEPTING", "REACHED THE MAXIMUM NUMBER OF TESTERS",
+        "ISN'T ACCEPTING ANY MORE TESTERS", "THANKS FOR YOUR INTEREST IN BECOMING A TESTER"
     ]
     
     for pattern in full_patterns:
         if pattern in text:
-            log(f"{pkg}: beta FULL (http).")
+            log_warning(f"{pkg}: beta FULL (http).")
             return False
     
-    # Check for the specific form HTML pattern
-    if 'FORM METHOD="POST" ACTION="/APPS/TESTING/' in text and 'CLASS="JOINFORM"' in text:
-        log("Found beta join form - opening page.")
-        webbrowser.open(url)
-        return True
-    
-    # More comprehensive check for "join" opportunities
+    # Check for beta availability
     join_patterns = [
-        "BECOME A TESTER",
-        "Become a tester",
-        "JOIN THE BETA",
-        "Join the beta",
-        "JOIN BETA",
-        "Join beta",
-        "JOIN TESTING",
-        "Join testing",
-        "PARTICIPATE IN BETA",
-        "Participate in beta",
-        "BETA TESTER PROGRAM",
-        "Beta tester program",
-        "JOIN THE TEST",
-        "Join the test",
-        "JOIN THE TESTING",
-        "Join the testing",
-        "JOIN THE PROGRAM",
-        "Join the program",
-        "ACCEPT INVITATION",
-        "Accept invitation",
-        "JOIN PROGRAM",
-        "Join program",
-        "JOIN",
-        "Join",
-        "JOIN NOW",
-        "Join now",
-        "SIGN UP",
-        "Sign up",
-        "BECOME A BETA TESTER",
-        "Become a beta tester",
-        "PARTICIPATE IN THE BETA",
-        "Participate in the beta",
-        "I'M IN",
-        "I'm in",
-        "ACCEPT",
-        "Accept",
-        "PARTICIPATE",
-        "Participate"
+        "BECOME A TESTER", "JOIN THE BETA", "JOIN BETA", "JOIN TESTING",
+        "PARTICIPATE IN BETA", "BETA TESTER PROGRAM", "ACCEPT INVITATION",
+        "JOIN THE TEST", "JOIN THE PROGRAM", "JOIN PROGRAM", "JOIN NOW",
+        "SIGN UP", "BECOME A BETA TESTER", "PARTICIPATE IN THE BETA",
+        "I'M IN", "ACCEPT", "PARTICIPATE", "ENROLL", "OPT-IN"
     ]
     
     for pattern in join_patterns:
         if pattern in text:
-            log("Possible slot for", pkg, "- opening page.")
+            log_success(f"Possible slot for {pkg} - opening page.")
             webbrowser.open(url)
             return True
     
-    # Check for button-like elements that might indicate availability
-    button_patterns = [
-        "BUTTON", "Button", "SUBMIT", "Submit", "FORM", "Form", "OPT-IN", "Opt-in", "ENROLL", "Enroll", "REGISTER", "Register"
-    ]
+    # Check for form elements
+    if 'FORM METHOD="POST" ACTION="/APPS/TESTING/' in text and 'CLASS="JOINFORM"' in text:
+        log_success("Found beta join form - opening page.")
+        webbrowser.open(url)
+        return True
     
-    for pattern in button_patterns:
-        if pattern in text:
-            log("Found interactive element for", pkg, "- opening page for manual check.")
-            webbrowser.open(url)
-            return True
-    
-    log("No opt-in found (http). Text patterns not matched.")
     return False
 
 # ---- Main flow ----
 def main():
+    print_welcome()
+    
     browser = FORCE_BROWSER or (sys.argv[1].lower() if len(sys.argv) > 1 else None)
     if not browser:
         browser = detect_default_browser()
-    log("Detected/selected browser:", browser)
+    log_info(f"Detected/selected browser: {browser}")
 
     prepared = None
     selenium_driver = None
@@ -837,18 +907,18 @@ def main():
     if browser in ("edge", "chrome", "firefox"):
         prepared = prepare_driver_for(browser)
         if prepared:
-            log("Prepared driver:", prepared.get("driver_path"))
+            log_info(f"Prepared driver: {prepared.get('driver_path')}")
             # Kill any existing browser processes before creating driver
             kill_browser_processes(browser)
             selenium_driver = create_selenium_driver(browser, prepared)
             if selenium_driver:
-                log("Selenium driver created successfully.")
+                log_success("Selenium driver created successfully.")
             else:
-                log("Failed to create Selenium driver - will fallback to HTTP polling.")
+                log_error("Failed to create Selenium driver - will fallback to HTTP polling.")
         else:
-            log("Could not prepare driver automatically - will fallback to HTTP polling.")
+            log_error("Could not prepare driver automatically - will fallback to HTTP polling.")
     else:
-        log("Unsupported or undetected default browser. Using HTTP polling fallback.")
+        log_warning("Unsupported or undetected default browser. Using HTTP polling fallback.")
 
     # Use a set of remaining packages so we can skip ones already done
     remaining = set(PACKAGES)
@@ -861,7 +931,7 @@ def main():
                         try:
                             selenium_driver.current_url
                         except Exception:
-                            log("Selenium driver crashed. Recreating...")
+                            log_error("Selenium driver crashed. Recreating...")
                             try:
                                 selenium_driver.quit()
                             except Exception:
@@ -869,10 +939,10 @@ def main():
                             kill_browser_processes(browser)
                             selenium_driver = create_selenium_driver(browser, prepared)
                             if not selenium_driver:
-                                log("Failed to recreate Selenium driver - switching to HTTP polling.")
+                                log_error("Failed to recreate Selenium driver - switching to HTTP polling.")
 
                         if selenium_driver:
-                            ok = selenium_check_and_click(selenium_driver, pkg)
+                            ok = enhanced_selenium_check_and_click(selenium_driver, pkg)
                         else:
                             ok = http_check(pkg)
                     else:
@@ -881,7 +951,7 @@ def main():
                     # If the checker signals you're already a tester
                     if ok == "ALREADY_TESTER":
                         if EXIT_ON_ALREADY:
-                            log("Already a tester for", pkg, "- exiting as requested.")
+                            log_success(f"Already a tester for {pkg} - exiting as requested.")
                             # attempt to clean up selenium driver
                             try:
                                 if selenium_driver:
@@ -890,14 +960,13 @@ def main():
                                 pass
                             return
                         else:
-                            log("Already a tester for", pkg, "- removing from watch list.")
+                            log_success(f"Already a tester for {pkg} - removing from watch list.")
                             remaining.remove(pkg)
                             continue
 
-                    # If a join/open action was taken
-                    if ok:
-                        log("Action taken for", pkg, ".")
-                        # decide whether to exit on first success or continue watching others:
+                    # If a join action was successful
+                    if ok in ["SUCCESS", "MANUAL_VERIFICATION_NEEDED", "MANUAL_ATTEMPT_NEEDED"]:
+                        log_success(f"Action taken for {pkg}")
                         if EXIT_ON_JOIN:
                             try:
                                 if selenium_driver:
@@ -910,17 +979,20 @@ def main():
                             continue
 
                 except Exception as e:
-                    log("Error checking", pkg, ":", e)
+                    log_error(f"Error checking {pkg}: {e}")
                 time.sleep(PER_PACKAGE_DELAY)
 
             if remaining:
-                log("Loop complete. Still watching:", ", ".join(sorted(remaining)))
-                log("Sleeping", CHECK_INTERVAL, "seconds.")
+                log_info(f"Still watching: {', '.join(sorted(remaining))}")
+                log_info(f"Sleeping {CHECK_INTERVAL} seconds.")
                 time.sleep(CHECK_INTERVAL)
+    except KeyboardInterrupt:
+        log_info("Monitoring stopped by user.")
     finally:
         try:
             if selenium_driver:
                 selenium_driver.quit()
+                log_info("Selenium driver closed.")
         except Exception:
             pass
 
