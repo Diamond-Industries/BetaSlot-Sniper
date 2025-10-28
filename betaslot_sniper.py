@@ -781,25 +781,64 @@ def ensure_edge_driver(browser_exe, browser_version):
         return None
 
     # First try: Exact version match
-    zip_url = f"https://msedgedriver.azureedge.net/{browser_version}/{zip_name}"
     dest_zip = os.path.join(DRIVER_BASE_DIR, f"msedgedriver_{browser_version}.zip")
-    out_dir = os.path.join(DRIVER_BASE_DIR, f"msedgedriver_{browser_version}")
-    
-    if os.path.exists(out_dir):
-        candidate = os.path.join(out_dir, driver_name)
-        if os.path.exists(candidate):
-            return candidate
-            
-    # Try downloading the exact version
-    if download_file(zip_url, dest_zip, show_log=True):
-        if extract_zip(dest_zip, out_dir):
-            for root, dirs, files in os.walk(out_dir):
-                if driver_name in files:
-                    driver_path = os.path.join(root, driver_name)
+    out_dir = DRIVER_BASE_DIR  # Extract directly to base directory, not subfolder
+
+    # Check if driver already exists in base directory
+    driver_path = os.path.join(out_dir, driver_name)
+    if os.path.exists(driver_path):
+        return driver_path
+
+    # Try multiple domain options
+    domains_to_try = [
+        f"https://msedgedriver.azureedge.net/{browser_version}/{zip_name}",
+        f"https://msedgedriver.microsoft.com/{browser_version}/{zip_name}"
+    ]
+
+    for zip_url in domains_to_try:
+        log_info(f"Trying download from: {zip_url}")
+        if download_file(zip_url, dest_zip, show_log=True):
+            if extract_zip(dest_zip, out_dir):
+                # Check directly in the base directory
+                driver_path = os.path.join(out_dir, driver_name)
+                if os.path.exists(driver_path):
                     if PLATFORM != "windows":
-                        os.chmod(driver_path, 0o755)  # Make executable on Unix
+                        os.chmod(driver_path, 0o755)
+                    # 🆕 CLEANUP: Delete zip file and Driver_Notes
+                    try:
+                        os.remove(dest_zip)
+                        notes_folder = os.path.join(out_dir, "Driver_Notes")
+                        if os.path.exists(notes_folder):
+                            shutil.rmtree(notes_folder)
+                        log_info("Cleaned up temporary files")
+                    except Exception as e:
+                        log_warning(f"Could not clean up temporary files: {e}")
                     log_success(f"Successfully downloaded Edge WebDriver {browser_version}")
                     return driver_path
+                # Also check if it was extracted to a subfolder (fallback)
+                for root, dirs, files in os.walk(out_dir):
+                    if driver_name in files and root != out_dir:
+                        driver_path = os.path.join(root, driver_name)
+                        # Move it to base directory
+                        shutil.move(driver_path, os.path.join(out_dir, driver_name))
+                        driver_path = os.path.join(out_dir, driver_name)
+                        if PLATFORM != "windows":
+                            os.chmod(driver_path, 0o755)
+                        # 🆕 CLEANUP: Delete zip file and Driver_Notes
+                        try:
+                            os.remove(dest_zip)
+                            notes_folder = os.path.join(out_dir, "Driver_Notes")
+                            if os.path.exists(notes_folder):
+                                shutil.rmtree(notes_folder)
+                            # Also clean up the empty subfolder
+                            if root != out_dir:
+                                shutil.rmtree(root)
+                            log_info("Cleaned up temporary files")
+                        except Exception as e:
+                            log_warning(f"Could not clean up temporary files: {e}")
+                        log_success(f"Successfully downloaded Edge WebDriver {browser_version}")
+                        return driver_path
+            break  # If download succeeded but extraction failed, don't try other domains
     
     # Second try: Major version matching with fallback
     major = browser_version.split('.')[0] if browser_version else None
