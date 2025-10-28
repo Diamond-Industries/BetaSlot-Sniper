@@ -1742,9 +1742,9 @@ def main():
                 time.sleep(CHECK_INTERVAL)
             else:
                 # 🆕 SUCCESS MESSAGE: All packages completed
-                print(f"\n{Colors.BOLD}{Colors.GREEN}{'🎉'*20}")
+                print(f"\n{Colors.BOLD}{Colors.GREEN}{'='*80}")
                 print("🎊 MISSION ACCOMPLISHED! 🎊")
-                print(f"{'🎉'*20}{Colors.RESET}")
+                print(f"{'='*80}{Colors.RESET}")
                 print(f"{Colors.GREEN}All {len(PACKAGES)} packages have been successfully processed!")
                 print(f"• Joined beta programs or already enrolled")
                 print(f"• Monitoring completed successfully")
